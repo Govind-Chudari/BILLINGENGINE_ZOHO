@@ -1,0 +1,7 @@
+zohoenv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.db
+.git

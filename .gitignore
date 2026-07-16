@@ -1,0 +1,58 @@
+# Root .gitignore for BillFlow
+
+# Secrets and configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Databases and instance folders
+*.db
+*.sqlite
+backend/instance/
+instance/
+
+# Dependency directories
+node_modules/
+jspm_packages/
+web_modules/
+
+# Python environment and compilation
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+zohoenv/
+
+# Build and distribution
+build/
+dist/
+out/
+.next/
+.nuxt/
+.cache/
+.parcel-cache/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDEs and editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Operating System files
+.DS_Store
+Thumbs.db

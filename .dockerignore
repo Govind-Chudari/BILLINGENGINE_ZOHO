@@ -1,0 +1,27 @@
+# Root .dockerignore for BillFlow
+
+# Exclude sensitive secrets
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+
+# Exclude databases
+**/*.db
+**/*.sqlite
+**/instance/
+
+# Exclude dependencies
+**/node_modules/
+**/env/
+**/venv/
+**/.venv/
+**/zohoenv/
+
+# Exclude caches and logs
+**/__pycache__/
+**/*.py[cod]
+**/.git/
+**/.vscode/
+**/.idea/
+**/*.log
