@@ -45,7 +45,7 @@ export default function Navbar() {
   return (
     <>
       {/* DESKTOP SIDEBAR */}
-      <aside className="hidden lg:flex w-56 bg-brand-900 flex-col min-h-screen sticky top-0 shrink-0">
+      <aside className="hidden lg:flex w-56 bg-brand-900 flex-col h-screen sticky top-0 shrink-0 overflow-hidden select-none">
         {/* Logo */}
         <div className="px-5 py-6 border-b border-white/10">
           <div className="flex items-center gap-3.5">
@@ -123,7 +123,10 @@ export default function Navbar() {
                   isAdmin ? "text-amber-400" : "text-blue-400"
                 }`}
               >
-                {isAdmin ? "Administrator" : "Free account"}
+                {isAdmin ? "Administrator" : (
+                  user?.plan === "pro_100" ? "Pro 100GB" :
+                  user?.plan === "ent_500" ? "Enterprise 500GB" : "Free account"
+                )}
               </div>
             </div>
           </div>

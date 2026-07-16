@@ -62,7 +62,7 @@ def upload():
 
     current_storage = get_total_storage_used(user.username)
 
-    is_valid, error_msg = validate_file(file, current_storage)
+    is_valid, error_msg = validate_file(file, current_storage, user_quota=user.storage_quota)
     if not is_valid:
         return jsonify({"error": error_msg}), 400
     
@@ -280,6 +280,56 @@ def delete(filename):
         "message": f"File '{filename}' deleted successfully!",
         "freed_space": format_bytes(deleted_size),
         "storage":     summary
+    }), 200
+
+
+# DELETE MULTIPLE OR ALL
+@objects_bp.route("/api/objects/delete-multiple", methods=["POST"])
+@jwt_required()
+def delete_multiple():
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    data = request.get_json() or {}
+    filenames = data.get("filenames", [])
+    delete_all = data.get("delete_all", False)
+
+    if delete_all:
+        user_files = StorageObject.query.filter_by(user_id=user.id).all()
+        filenames = [f.filename for f in user_files]
+
+    if not filenames:
+        return jsonify({"message": "No files selected for deletion"}), 200
+
+    deleted_count = 0
+    failed_filenames = []
+    
+    for filename in filenames:
+        obj = StorageObject.query.filter_by(
+            user_id=user.id, filename=filename
+        ).first()
+        if not obj:
+            failed_filenames.append(filename)
+            continue
+            
+        success = delete_file(user.username, filename)
+        if success:
+            db.session.delete(obj)
+            deleted_count += 1
+        else:
+            failed_filenames.append(filename)
+
+    db.session.commit()
+
+    log_api_call(user.id)
+    update_storage_snapshot(user.id, user.username)
+    summary = get_storage_summary(user.username)
+
+    return jsonify({
+        "message": f"Successfully deleted {deleted_count} files.",
+        "failed_files": failed_filenames,
+        "storage": summary
     }), 200
 
 

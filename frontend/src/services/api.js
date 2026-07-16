@@ -40,6 +40,8 @@ export const authAPI = {
   login: (username, password) => api.post("/api/login", { username, password }),
 
   getProfile: () => api.get("/api/profile"),
+
+  upgradePlan: (plan) => api.post("/api/profile/upgrade-plan", { plan }),
 };
 
 // OBJECTS
@@ -55,6 +57,9 @@ export const objectsAPI = {
     api.get(`/api/objects/download/${filename}`, { responseType: "blob" }),
 
   delete: (filename) => api.delete(`/api/objects/${filename}`),
+
+  deleteMultiple: (filenames = [], deleteAll = false) =>
+    api.post("/api/objects/delete-multiple", { filenames, delete_all: deleteAll }),
 
   storageInfo: () => api.get("/api/objects/storage"),
   

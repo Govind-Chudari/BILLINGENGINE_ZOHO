@@ -26,6 +26,8 @@ export default function Files() {
   const [showOptimizer, setShowOptimizer] = useState(false);
   const [verifying,     setVerifying]     = useState(null);
   const [verifyData,    setVerifyData]    = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [bulkDeleteTarget, setBulkDeleteTarget] = useState(null); // 'selected' or 'all'
 
   const loadFiles = useCallback(async () => {
     setLoading(true);
@@ -35,9 +37,12 @@ export default function Files() {
         objectsAPI.storageInfo(),
         objectsAPI.optimize()
       ]);
-      setFiles(filesRes.data.files || []);
+      const loaded = filesRes.data.files || [];
+      setFiles(loaded);
       setStorage(storageRes.data.storage);
       setOptReport(optRes.data);
+      // Clean up selected files that are no longer present
+      setSelectedFiles(prev => prev.filter(name => loaded.some(f => f.filename === name)));
     } catch (err) {
       console.error("Failed to load files:", err);
     } finally {
@@ -92,6 +97,36 @@ export default function Files() {
     }
   }
 
+  async function handleBulkDelete() {
+    setDeleteLoading(true);
+    try {
+      const deleteAll = bulkDeleteTarget === "all";
+      const targetFilenames = deleteAll ? [] : selectedFiles;
+      await objectsAPI.deleteMultiple(targetFilenames, deleteAll);
+      setSelectedFiles([]);
+      setBulkDeleteTarget(null);
+      setRefreshKey(k => k + 1);
+    } catch (err) {
+      alert("Delete failed: " + (err.response?.data?.error || "Unknown error"));
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
+  function handleSelectFile(filename) {
+    setSelectedFiles(prev =>
+      prev.includes(filename) ? prev.filter(f => f !== filename) : [...prev, filename]
+    );
+  }
+
+  function handleSelectAll() {
+    if (selectedFiles.length === filtered.length) {
+      setSelectedFiles([]);
+    } else {
+      setSelectedFiles(filtered.map(f => f.filename));
+    }
+  }
+
   const filtered = files.filter(f =>
     f.filename.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -120,15 +155,40 @@ export default function Files() {
             </p>
           </div>
 
-          <button
-            onClick={() => setShowUpload(v => !v)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl
-                       bg-brand-600 hover:bg-brand-700 text-white font-semibold
-                       text-sm transition-all shadow-sm hover:shadow-md
-                       self-start sm:self-auto">
-            <FolderOpen size={16} />
-            {showUpload ? "Hide Upload" : "Upload Files"}
-          </button>
+          <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
+            {/* Delete All button */}
+            {files.length > 0 && (
+              <button
+                onClick={() => setBulkDeleteTarget("all")}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl
+                           bg-red-50 hover:bg-red-100 text-red-600 border border-red-200
+                           font-semibold text-sm transition-all shadow-sm">
+                <Trash2 size={16} />
+                Delete All
+              </button>
+            )}
+
+            {/* Delete Selected button */}
+            {selectedFiles.length > 0 && (
+              <button
+                onClick={() => setBulkDeleteTarget("selected")}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl
+                           bg-red-600 hover:bg-red-700 text-white
+                           font-semibold text-sm transition-all shadow-sm hover:shadow-md">
+                <Trash2 size={16} />
+                Delete Selected ({selectedFiles.length})
+              </button>
+            )}
+
+            <button
+              onClick={() => setShowUpload(v => !v)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl
+                         bg-brand-600 hover:bg-brand-700 text-white font-semibold
+                         text-sm transition-all shadow-sm hover:shadow-md">
+              <FolderOpen size={16} />
+              {showUpload ? "Hide Upload" : "Upload Files"}
+            </button>
+          </div>
         </div>
 
         {/* Storage Bar  */}
@@ -313,6 +373,14 @@ export default function Files() {
               <table className="w-full">
                 <thead>
                   <tr className="bg-gray-50 text-left">
+                    <th className="px-5 py-3 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedFiles.length === filtered.length && filtered.length > 0}
+                        onChange={handleSelectAll}
+                        className="rounded border-gray-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
+                      />
+                    </th>
                     <th className="px-5 py-3 text-xs font-bold text-gray-400
                                    uppercase tracking-wider w-8">#</th>
                     <th className="px-5 py-3 text-xs font-bold text-gray-400
@@ -338,6 +406,8 @@ export default function Files() {
                       onDelete={() => setDeleteTarget(file.filename)}
                       verifying={verifying}
                       onVerify={handleVerify}
+                      isSelected={selectedFiles.includes(file.filename)}
+                      onSelect={() => handleSelectFile(file.filename)}
                     />
                   ))}
                 </tbody>
@@ -365,6 +435,8 @@ export default function Files() {
                     onDelete={() => setDeleteTarget(file.filename)}
                     verifying={verifying}
                     onVerify={handleVerify}
+                    isSelected={selectedFiles.includes(file.filename)}
+                    onSelect={() => handleSelectFile(file.filename)}
                   />
                 ))}
               </div>
@@ -390,6 +462,16 @@ export default function Files() {
           loading={deleteLoading}
           onConfirm={handleDelete}
           onCancel={() => !deleteLoading && setDeleteTarget(null)}
+        />
+      )}
+
+      {/* Bulk Delete Confirmation Modal */}
+      {bulkDeleteTarget && (
+        <DeleteModal
+          filename={bulkDeleteTarget === "all" ? "ALL files in your storage" : `${selectedFiles.length} selected files`}
+          loading={deleteLoading}
+          onConfirm={handleBulkDelete}
+          onCancel={() => !deleteLoading && setBulkDeleteTarget(null)}
         />
       )}
 
@@ -462,11 +544,19 @@ export default function Files() {
 }
 
 
-function FileRow({ file, index, isDownloading, onDownload, onDelete, verifying, onVerify }) {
+function FileRow({ file, index, isDownloading, onDownload, onDelete, verifying, onVerify, isSelected, onSelect }) {
   const colorClass = getFileColor(file.filename);
 
   return (
-    <tr className="hover:bg-gray-50/80 transition-colors group">
+    <tr className={`hover:bg-gray-50/80 transition-colors group ${isSelected ? 'bg-indigo-50/30' : ''}`}>
+      <td className="px-5 py-3.5 text-center">
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={onSelect}
+          className="rounded border-gray-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
+        />
+      </td>
       <td className="px-5 py-3.5 text-xs text-gray-400 font-medium">{index}</td>
 
       <td className="px-5 py-3.5">
@@ -550,11 +640,17 @@ function FileRow({ file, index, isDownloading, onDownload, onDelete, verifying, 
   );
 }
 
-function MobileFileCard({ file, isDownloading, onDownload, onDelete, verifying, onVerify }) {
+function MobileFileCard({ file, isDownloading, onDownload, onDelete, verifying, onVerify, isSelected, onSelect }) {
   const colorClass = getFileColor(file.filename);
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3.5">
+    <div className={`flex items-center gap-3 px-4 py-3.5 ${isSelected ? 'bg-indigo-50/20' : ''}`}>
+      <input
+        type="checkbox"
+        checked={isSelected}
+        onChange={onSelect}
+        className="rounded border-gray-300 text-brand-600 focus:ring-brand-500 cursor-pointer mr-1"
+      />
       <div className={`w-11 h-11 rounded-xl flex items-center justify-center
                        text-xl border shrink-0 ${colorClass}`}>
         {getFileIcon(file.filename)}

@@ -17,6 +17,9 @@
    - *Predictive Bill Shock Prevention (Linear Extrapolation)*
    - *Blockchain-based Tamper-Proof Invoice & File Verification (Polygon/Web3)*
    - *Zero-Waste Storage Optimizer (Deduplication & Compression)*
+   - *Multi-Tiered Subscriptions & Dynamic Quota Enforcement*
+   - *Cumulative API Double-Billing Resolution Math*
+   - *MinIO Storage Synchronization & Orphan Cleanup*
 6. **Detailed API Lifecycles**
 7. **Expert Panel Questions & Strategic Answers (FAQ)**
 
@@ -356,6 +359,51 @@ graph TD
      * Audits files that haven't been downloaded or accessed in over 90 days (`last_accessed_at < ninety_days_ago`).
   4. **Financial Forecasting:**
      * Sums the potential space savings from stale, duplicate, and compressible files, and calculates the user's estimated monthly financial savings.
+
+---
+
+### F. Multi-Tiered Subscriptions & Dynamic Quota Enforcement
+* **Data Model updates:**
+  * Added a `plan` column (`VARCHAR(20)`) to the `User` model, defaulting to `'free'`.
+  * Implemented a hybrid property `storage_quota` on the `User` model returning bytes corresponding to the tier:
+    * `free`: 1 GB ($1,073,741,824$ bytes)
+    * `pro_100`: 100 GB ($107,374,182,400$ bytes)
+    * `ent_500`: 500 GB ($536,870,912,000$ bytes)
+* **Dynamic Quota Validation:**
+  * Refactored `validate_file` inside `backend/utils/validators.py` and objects upload routes in `routes/objects.py` to check file uploads against `user.storage_quota` instead of a hardcoded config limit.
+  * Updated `get_storage_summary` in `minio_service.py` to retrieve the user's current plan quota dynamically from the database to report correct progress percentages.
+* **Payment Upgrade Flow:**
+  * Created endpoint `POST /api/profile/upgrade-plan` to allow users to switch their plans.
+  * Built a beautiful plan selection card system in the UI (`Billing.jsx`) with a simulated card checkout modal.
+  * Integrated state updates using `refreshUser` inside `AuthContext.jsx` to immediately refresh user tier details across the sidebar and views.
+
+---
+
+### G. Cumulative API Double-Billing Resolution Math
+* **The Problem:**
+  * The platform tracks cumulative user API calls. When generating subsequent invoices in the same billing cycle (e.g. after a user paid an interim invoice), simple calculations charged the user for the entire cumulative count again, resulting in paying for the same API calls twice.
+* **The Architectural Fix:**
+  * Added `billing_to_api_calls` (Integer) to the `Invoice` schema. This field stores a snapshot of the cumulative API calls count at the moment the invoice was generated and paid.
+* **Delta Calculation Formula:**
+  * During invoice generation or preview, the system queries the last paid invoice for the billing window.
+  * Let $C_{\text{current}}$ be the total cumulative API calls, and $C_{\text{offset}}$ be the `billing_to_api_calls` value from the last paid invoice.
+  * The incremental API calls billed in the current window are:
+    $$\Delta \text{ API Calls} = C_{\text{current}} - C_{\text{offset}}$$
+  * Deductions for the monthly free tier allowance ($F_{\text{api}} = 1000$) are applied on the remaining delta rather than the cumulative total:
+    $$\text{Billable API Calls} = \max(0, \Delta \text{ API Calls} - F_{\text{api}})$$
+  * This ensures that paid API transactions are permanently cleared from the active billing queue, ensuring that subsequent invoice runs inside the same period start exactly from a cost baseline of zero.
+
+---
+
+### H. MinIO Storage Synchronization & Orphan Cleanup
+* **The Ghost Storage Problem:**
+  * Discrepancies arose where users had higher storage metrics reported by MinIO than what was recorded in the SQL database. This was caused by orphaned files residing in the MinIO bucket (e.g., failed uploads, aborted operations, or out-of-sync deletes) that did not have matching rows in the `StorageObject` database table.
+* **The Cleanup Sync Loop:**
+  * Created a verification and cleanup routine that matches database objects with physical objects in MinIO:
+    1. Fetches all active keys (files) recorded in the `StorageObject` database table for the user.
+    2. Queries the MinIO bucket directly using the client SDK to retrieve the list of all files physically present in storage.
+    3. Identifies keys present in MinIO but missing from the SQLite database (orphans).
+    4. Automatically purges these orphaned objects from MinIO, synchronizing storage footprint metrics with the database source of truth.
 
 ---
 

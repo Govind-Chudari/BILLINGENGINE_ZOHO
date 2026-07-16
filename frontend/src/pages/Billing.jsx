@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import Navbar from "../components/Navbar";
-import { billingAPI } from "../services/api";
+import { billingAPI, authAPI } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import { generateInvoicePDF } from "../utils/generatePDF";
 import {
@@ -62,10 +62,20 @@ function InvoiceRow({ invoice, username, onPay, paying, onVerify, verifying }) {
               {isPaid ? "✓ PAID" : "PENDING"}
             </span>
           </div>
+          {/* Show billing period if available, otherwise fall back to month */}
           <p className="text-xs text-gray-400 mt-0.5">
-            {invoice.month} · {invoice.usage.total_api_calls} API calls ·{" "}
+            {invoice.billing_from && invoice.billing_to
+              ? `${invoice.billing_from} → ${invoice.billing_to}`
+              : invoice.month
+            }
+            {" · "}{invoice.usage.total_api_calls} API calls ·{" "}
             {invoice.usage.avg_storage_mb} MB avg
           </p>
+          {isPaid && invoice.paid_at && (
+            <p className="text-[10px] text-green-500 font-semibold mt-0.5">
+              ✓ Paid on {new Date(invoice.paid_at).toLocaleDateString()}
+            </p>
+          )}
         </div>
       </div>
 
@@ -74,10 +84,16 @@ function InvoiceRow({ invoice, username, onPay, paying, onVerify, verifying }) {
         <p className="text-lg font-extrabold text-gray-800">
           ₹{invoice.costs.total_amount.toFixed(4)}
         </p>
-        <p className="text-[11px] text-gray-400">
-          Storage ₹{invoice.costs.storage_cost.toFixed(4)} +
-          API ₹{invoice.costs.api_cost.toFixed(4)}
-        </p>
+        {invoice.costs.amount_paid > 0 && invoice.costs.amount_paid < invoice.costs.total_amount ? (
+          <p className="text-[11px] text-blue-600 font-semibold">
+            Paid: ₹{invoice.costs.amount_paid.toFixed(4)} (Due: ₹{invoice.costs.amount_due.toFixed(4)})
+          </p>
+        ) : (
+          <p className="text-[11px] text-gray-400">
+            Storage ₹{invoice.costs.storage_cost.toFixed(4)} +
+            API ₹{invoice.costs.api_cost.toFixed(4)}
+          </p>
+        )}
       </div>
 
       {/* Right — actions */}
@@ -122,7 +138,7 @@ function InvoiceRow({ invoice, username, onPay, paying, onVerify, verifying }) {
               : <CreditCard size={13} />
             }
             <span className="hidden sm:inline">
-              {paying === invoice.id ? "..." : "Pay Now"}
+              {paying === invoice.id ? "..." : (invoice.costs.amount_paid > 0 ? `Pay Due (₹${invoice.costs.amount_due.toFixed(4)})` : "Pay Now")}
             </span>
           </button>
         )}
@@ -142,8 +158,9 @@ function InvoiceRow({ invoice, username, onPay, paying, onVerify, verifying }) {
 
 // Main Billing Page 
 export default function Billing() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
 
+  const [profile,    setProfile]    = useState(null);
   const [estimate,   setEstimate]   = useState(null);
   const [invoices,   setInvoices]   = useState([]);
   const [loading,    setLoading]    = useState(true);
@@ -157,18 +174,33 @@ export default function Billing() {
   const [budgetInput, setBudgetInput] = useState("");
   const [savingBudget, setSavingBudget] = useState(false);
 
+  // States for upgrading plans
+  const [showPayModal, setShowPayModal] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState(null);
+  const [upgrading, setUpgrading]       = useState(false);
+  const [cardName, setCardName]         = useState("");
+  const [cardNumber, setCardNumber]     = useState("");
+  const [cardExpiry, setCardExpiry]     = useState("");
+  const [cardCvv, setCardCvv]           = useState("");
+  const [payError, setPayError]         = useState(null);
+  const [upgradeSuccess, setUpgradeSuccess] = useState(false);
+
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const [estRes, invRes, predRes] = await Promise.all([
+        const [estRes, invRes, predRes, profRes] = await Promise.all([
           billingAPI.estimate(),
           billingAPI.listInvoices(),
-          billingAPI.predict()
+          billingAPI.predict(),
+          authAPI.getProfile().catch(() => ({ data: null }))
         ]);
         setEstimate(estRes.data.estimate);
         setInvoices(invRes.data.invoices || []);
         setPrediction(predRes.data);
+        if (profRes.data) {
+          setProfile(profRes.data);
+        }
         if (predRes.data.budget_limit !== null && predRes.data.budget_limit !== undefined) {
           setBudgetInput(predRes.data.budget_limit.toString());
         }
@@ -201,10 +233,21 @@ export default function Billing() {
     try {
       const now = new Date();
       const res = await billingAPI.generate(now.getFullYear(), now.getMonth() + 1);
+
+      if (res.data.no_new_usage) {
+        // User just paid and immediately clicked generate — no new activity yet
+        setGenMsg({
+          type: "warning",
+          text: "✋ No new usage since your last payment. Upload files or use the API first, then generate a new invoice."
+        });
+        // Don't refresh the list — no new invoice was created
+        return;
+      }
+
       if (res.data.already_existed) {
         setGenMsg({
           type: "info",
-          text: "Invoice for this month already exists — shown below."
+          text: `Invoice #${String(res.data.invoice.id).padStart(4,"0")} updated with latest usage.`
         });
       } else {
         setGenMsg({
@@ -246,6 +289,45 @@ export default function Billing() {
       setVerifying(null);
     }
   }
+
+  const handleUpgradeClick = (plan) => {
+    setSelectedPlan(plan);
+    setCardName("");
+    setCardNumber("");
+    setCardExpiry("");
+    setCardCvv("");
+    setPayError(null);
+    setUpgradeSuccess(false);
+    setShowPayModal(true);
+  };
+
+  const handlePayAndUpgrade = async (e) => {
+    e.preventDefault();
+    if (!cardName || !cardNumber || !cardExpiry || !cardCvv) {
+      setPayError("All card details are required.");
+      return;
+    }
+    setPayError(null);
+    setUpgrading(true);
+    try {
+      await authAPI.upgradePlan(selectedPlan.id);
+      
+      if (refreshUser) {
+        refreshUser({ plan: selectedPlan.id });
+      }
+
+      setUpgradeSuccess(true);
+      setTimeout(() => {
+        setShowPayModal(false);
+        setRefreshKey(prev => prev + 1);
+      }, 2000);
+    } catch (err) {
+      console.error(err);
+      setPayError(err.response?.data?.error || "Payment failed. Please try again.");
+    } finally {
+      setUpgrading(false);
+    }
+  };
 
   const currentBill = estimate?.current_bill;
   const forecast    = estimate?.forecast;
@@ -451,11 +533,15 @@ export default function Billing() {
                               ? "bg-green-50 border-green-200 text-green-700"
                               : genMsg.type === "error"
                               ? "bg-red-50 border-red-200 text-red-700"
+                              : genMsg.type === "warning"
+                              ? "bg-amber-50 border-amber-200 text-amber-700"
                               : "bg-blue-50 border-blue-200 text-blue-700"
                             }`}>
               {genMsg.type === "success"
                 ? <CheckCircle size={15} className="mt-0.5 shrink-0" />
                 : genMsg.type === "error"
+                ? <AlertCircle size={15} className="mt-0.5 shrink-0" />
+                : genMsg.type === "warning"
                 ? <AlertCircle size={15} className="mt-0.5 shrink-0" />
                 : <Clock size={15} className="mt-0.5 shrink-0" />
               }
@@ -570,9 +656,98 @@ export default function Billing() {
           </div>
         </div>
 
+        {/* Storage Plans & Quota Upgrades */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 sm:p-6 mb-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Zap size={18} className="text-brand-600 animate-pulse" />
+            <h3 className="font-bold text-gray-800">Storage Plans & Quota Upgrades</h3>
+          </div>
+          <p className="text-gray-400 text-sm mb-6">
+            Need more storage? Choose one of our high-speed, secure plans below to upgrade your quota instantly.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {[
+              {
+                id: "free",
+                name: "Free Tier",
+                price: "₹0",
+                priceSub: "forever",
+                quota: "1 GB",
+                desc: "Great for testing and simple document storage needs.",
+                bg: "bg-slate-50",
+                border: "border-slate-100"
+              },
+              {
+                id: "pro_100",
+                name: "Pro 100GB",
+                price: "₹99",
+                priceSub: "per month",
+                quota: "100 GB",
+                desc: "Perfect for scaling projects and storing high-resolution media.",
+                bg: "bg-indigo-50/30",
+                border: "border-indigo-100"
+              },
+              {
+                id: "ent_500",
+                name: "Enterprise 500GB",
+                price: "₹499",
+                priceSub: "per month",
+                quota: "500 GB",
+                desc: "Enterprise-grade storage with full blockchain authenticity backing.",
+                bg: "bg-brand-50/20",
+                border: "border-brand-100"
+              }
+            ].map(plan => {
+              const activePlan = profile?.plan || "free";
+              const isCurrent = activePlan === plan.id;
+
+              return (
+                <div
+                  key={plan.id}
+                  className={`rounded-2xl border-2 p-5 flex flex-col justify-between transition-all hover:shadow-md ${
+                    isCurrent ? 'border-brand-500 bg-brand-50/10 ring-2 ring-brand-100' : `${plan.border} ${plan.bg}`
+                  }`}
+                >
+                  <div>
+                    <div className="flex justify-between items-center mb-3">
+                      <span className="font-bold text-gray-800 text-base">{plan.name}</span>
+                      {isCurrent && (
+                        <span className="text-[10px] font-bold text-brand-700 bg-brand-100 border border-brand-200 px-2 py-0.5 rounded-full">
+                          Current Plan
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-baseline gap-1 mb-3">
+                      <span className="text-3xl font-extrabold text-gray-900">{plan.price}</span>
+                      <span className="text-xs text-gray-400 font-medium">{plan.priceSub}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 mb-3 bg-white/80 backdrop-blur px-2.5 py-1 rounded-lg border border-gray-100 w-fit">
+                      <HardDrive size={13} className="text-gray-400" />
+                      <span className="text-xs font-bold text-gray-600">{plan.quota} Storage</span>
+                    </div>
+                    <p className="text-xs text-gray-400 leading-relaxed mb-6">{plan.desc}</p>
+                  </div>
+
+                  <button
+                    disabled={isCurrent}
+                    onClick={() => handleUpgradeClick(plan)}
+                    className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all ${
+                      isCurrent
+                        ? 'bg-gray-100 text-gray-400 cursor-default'
+                        : 'bg-brand-600 hover:bg-brand-700 text-white shadow-sm hover:shadow'
+                    }`}
+                  >
+                    {isCurrent ? 'Current Plan' : 'Select Plan'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Invoice History */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100
-                        overflow-hidden">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
 
           {/* Header */}
           <div className="flex items-center justify-between px-5 py-4
@@ -712,6 +887,127 @@ export default function Billing() {
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Plan Upgrade Payment Modal */}
+      {showPayModal && selectedPlan && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                  <CreditCard size={18} className="text-brand-600" />
+                  Upgrade Subscription
+                </h3>
+                <button
+                  onClick={() => setShowPayModal(false)}
+                  className="text-gray-400 hover:text-gray-600 text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+              </div>
+
+              {upgradeSuccess ? (
+                <div className="text-center py-8">
+                  <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4 animate-bounce">
+                    <CheckCircle size={32} />
+                  </div>
+                  <h4 className="text-base font-bold text-gray-800 mb-1">Upgrade Successful!</h4>
+                  <p className="text-xs text-gray-500">Your new storage limit of {selectedPlan.quota} is active.</p>
+                </div>
+              ) : (
+                <form onSubmit={handlePayAndUpgrade} className="space-y-4">
+                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 flex justify-between items-center mb-2">
+                    <div>
+                      <p className="text-xs text-gray-400 font-medium">Selected Plan</p>
+                      <p className="text-sm font-bold text-gray-800">{selectedPlan.name} ({selectedPlan.quota})</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-gray-400 font-medium">Total Amount</p>
+                      <p className="text-base font-extrabold text-brand-600">{selectedPlan.price}</p>
+                    </div>
+                  </div>
+
+                  {payError && (
+                    <div className="p-3 bg-red-50 border border-red-100 rounded-xl text-xs font-semibold text-red-600">
+                      {payError}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Cardholder Name</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Govind Chudari"
+                      value={cardName}
+                      onChange={e => setCardName(e.target.value)}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-brand-500 font-medium text-gray-700"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Card Number</label>
+                    <input
+                      type="text"
+                      required
+                      maxLength="19"
+                      placeholder="1234 5678 1234 5678"
+                      value={cardNumber}
+                      onChange={e => {
+                        let val = e.target.value.replace(/\D/g, '');
+                        val = val.match(/.{1,4}/g)?.join(' ') || val;
+                        setCardNumber(val.substring(0, 19));
+                      }}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-brand-500 font-mono text-gray-700"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Expiry Date</label>
+                      <input
+                        type="text"
+                        required
+                        maxLength="5"
+                        placeholder="MM/YY"
+                        value={cardExpiry}
+                        onChange={e => {
+                          let val = e.target.value.replace(/\D/g, '');
+                          if (val.length > 2) {
+                            val = val.substring(0, 2) + '/' + val.substring(2, 4);
+                          }
+                          setCardExpiry(val);
+                        }}
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-brand-500 font-mono text-gray-700"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase mb-1">CVV</label>
+                      <input
+                        type="password"
+                        required
+                        maxLength="3"
+                        placeholder="•••"
+                        value={cardCvv}
+                        onChange={e => setCardCvv(e.target.value.replace(/\D/g, '').substring(0, 3))}
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-brand-500 font-mono text-gray-700"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={upgrading}
+                    className="w-full py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl transition-all shadow-md hover:shadow-lg mt-2 flex items-center justify-center gap-2"
+                  >
+                    {upgrading ? "Processing..." : `Pay ${selectedPlan.price.split('/')[0]} & Activate`}
+                  </button>
+                </form>
+              )}
             </div>
           </div>
         </div>

@@ -167,7 +167,9 @@ def get_storage_summary(username):
     ensure_bucket_exists(username)          # ← guard added
 
     total_used = get_total_storage_used(username)
-    quota      = Config.STORAGE_QUOTA_BYTES
+    from models import User
+    user = User.query.filter_by(username=username).first()
+    quota = user.storage_quota if user else Config.STORAGE_QUOTA_BYTES
     remaining  = max(0, quota - total_used)
     percent    = round((total_used / quota) * 100, 1) if quota > 0 else 0
 

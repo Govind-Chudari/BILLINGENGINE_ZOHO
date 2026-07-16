@@ -22,9 +22,9 @@ class Config:
     MINIO_SECURE     = os.environ.get("MINIO_SECURE",     "false").lower() == "true"
 
 
-    MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+    MAX_FILE_SIZE_BYTES = 1024 * 1024 * 1024
 
-    STORAGE_QUOTA_BYTES = 50 * 1024 * 1024
+    STORAGE_QUOTA_BYTES = 1024 * 1024 * 1024
 
     BLOCKED_EXTENSIONS = {
         ".exe", ".bat", ".sh", ".cmd", ".ps1",
@@ -43,5 +43,5 @@ class Config:
 
     PRICE_API_PER_CALL = 0.001
 
-    FREE_STORAGE_BYTES    = 1 * 1024 * 1024 * 1024   # 1-GB
-    FREE_API_CALLS        = 1000
+    FREE_STORAGE_BYTES    = 0
+    FREE_API_CALLS        = 0

@@ -2,7 +2,7 @@ import os
 from config import Config
 
 
-def validate_file(file, current_storage_used_bytes):
+def validate_file(file, current_storage_used_bytes, user_quota=None):
     """
     Validates a file before uploading.
     Returns (is_valid, error_message)
@@ -48,7 +48,7 @@ def validate_file(file, current_storage_used_bytes):
         return False, "File is empty — cannot upload a 0 byte file"
 
     # Check 5: Storage quota 
-    quota = Config.STORAGE_QUOTA_BYTES
+    quota = user_quota if user_quota is not None else Config.STORAGE_QUOTA_BYTES
     remaining = quota - current_storage_used_bytes
 
     if file_size > remaining:

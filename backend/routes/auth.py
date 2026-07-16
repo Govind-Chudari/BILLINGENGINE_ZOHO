@@ -76,10 +76,31 @@ def profile():
     user = User.query.get(int(user_id))
     if not user:
         return jsonify({"error": "User not found"}), 404
+    return jsonify(user.to_dict()), 200
+
+
+# Upgrade Plan
+@auth_bp.route("/api/profile/upgrade-plan", methods=["POST"])
+@jwt_required()
+def upgrade_plan():
+    user_id = get_jwt_identity()
+    user = User.query.get(int(user_id))
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    data = request.get_json()
+    if not data or "plan" not in data:
+        return jsonify({"error": "plan field is required"}), 400
+
+    plan = data["plan"]
+    if plan not in ["free", "pro_100", "ent_500"]:
+        return jsonify({"error": "Invalid plan name"}), 400
+
+    # Charge a simulation fee or just upgrade directly
+    user.plan = plan
+    db.session.commit()
+
     return jsonify({
-        "id":         user.id,
-        "username":   user.username,
-        "email":      user.email,
-        "role":       user.role,          
-        "created_at": user.created_at.isoformat()
+        "message": f"Successfully upgraded to {plan} plan!",
+        "user": user.to_dict()
     }), 200

@@ -16,10 +16,20 @@ class User(db.Model):
     role       = db.Column(db.String(20), default="user")   
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     budget_limit = db.Column(db.Float, nullable=True)
+    plan       = db.Column(db.String(20), default="free")
 
     objects    = db.relationship("StorageObject", backref="owner", lazy=True)
     usage_logs = db.relationship("UsageLog", backref="user", lazy=True)
     invoices   = db.relationship("Invoice", backref="user", lazy=True)
+
+    @property
+    def storage_quota(self):
+        plan_quotas = {
+            "free": 1 * 1024 * 1024 * 1024,      # 1 GB
+            "pro_100": 100 * 1024 * 1024 * 1024,  # 100 GB
+            "ent_500": 500 * 1024 * 1024 * 1024   # 500 GB
+        }
+        return plan_quotas.get(self.plan, 1 * 1024 * 1024 * 1024)
 
     def to_dict(self):
         return {
@@ -28,7 +38,9 @@ class User(db.Model):
             "email": self.email,
             "role": self.role,
             "created_at": self.created_at.isoformat(),
-            "budget_limit": self.budget_limit
+            "budget_limit": self.budget_limit,
+            "plan": self.plan,
+            "storage_quota": self.storage_quota
         }
     
 
@@ -108,7 +120,15 @@ class Invoice(db.Model):
 
     # Status
     status           = db.Column(db.String(20), default="generated")  # generated / paid
+    amount_paid      = db.Column(db.Float, default=0.0)  # Amount already paid for this cycle
     generated_at     = db.Column(db.DateTime,   default=datetime.utcnow)
+    paid_at          = db.Column(db.DateTime,   nullable=True)  # When invoice was paid
+
+    # Billing period this invoice covers (fresh invoices after payment)
+    billing_from          = db.Column(db.Date, nullable=True)  # First day of this billing window
+    billing_to            = db.Column(db.Date, nullable=True)  # Last day of this billing window
+    billing_to_api_calls  = db.Column(db.Integer, default=0)   # api_calls in UsageLog for billing_to at invoice time
+                                                                # Used to subtract pre-payment calls from next invoice
 
     # Blockchain Proof
     invoice_hash     = db.Column(db.String(64), nullable=True) # SHA-256 hash
@@ -121,6 +141,8 @@ class Invoice(db.Model):
             "month":            self.month,
             "year":             self.year,
             "month_number":     self.month_number,
+            "billing_from":     self.billing_from.isoformat() if self.billing_from else None,
+            "billing_to":       self.billing_to.isoformat() if self.billing_to else None,
             "usage": {
                 "avg_storage_bytes": self.avg_storage_bytes,
                 "avg_storage_mb":    round(self.avg_storage_bytes / (1024 * 1024), 4),
@@ -131,7 +153,9 @@ class Invoice(db.Model):
             "costs": {
                 "storage_cost":  round(self.storage_cost, 4),
                 "api_cost":      round(self.api_cost, 4),
-                "total_amount":  round(self.total_amount, 4)
+                "total_amount":  round(self.total_amount, 4),
+                "amount_paid":   round(self.amount_paid, 4),
+                "amount_due":    round(max(0.0, self.total_amount - self.amount_paid), 4)
             },
             "rates": {
                 "storage_per_gb_day": self.rate_storage_per_gb_day,
@@ -139,6 +163,7 @@ class Invoice(db.Model):
             },
             "status":        self.status,
             "generated_at":  self.generated_at.isoformat(),
+            "paid_at":       self.paid_at.isoformat() if self.paid_at else None,
             "invoice_hash":  self.invoice_hash,
             "chain_tx_hash": self.chain_tx_hash
         }
